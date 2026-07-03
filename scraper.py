@@ -31,7 +31,7 @@ import json
 import os
 import sys
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -89,6 +89,11 @@ EXCLUDE_TERMS = [
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
+# When set to "true", the script marks every currently-matching event as
+# already seen WITHOUT sending any Telegram messages. Use this once to
+# "reset" after a large first-run flood, then let normal runs resume.
+SEED_ONLY = os.environ.get("SEED_ONLY", "").lower() == "true"
+
 
 def load_seen() -> set[str]:
     if STATE_FILE.exists():
@@ -131,7 +136,14 @@ def fetch_events() -> list[dict]:
 
         query_variants = [
             {**base_params, "event_type": "General", "start": today, "end": end},
-            {**base_params, "event_type": "Course", "end": end},
+            # Course-type (recurring hobby groups) still needs a start
+            # filter -- without one, the API has no lower bound at all
+            # and happily returns events from years ago that have long
+            # since ended. Using `start=today` here filters on whether
+            # the event has already fully finished, not strictly on
+            # when it began, so an ongoing hobby group that started a
+            # few weeks ago (but hasn't ended) still comes through.
+            {**base_params, "event_type": "Course", "start": today, "end": end},
         ]
 
         for params in query_variants:
@@ -179,6 +191,18 @@ def is_free(ev: dict) -> bool:
     if not offers:
         return True  # no price info listed usually means free
     return any(o.get("is_free") for o in offers)
+
+
+def has_not_ended(ev: dict) -> bool:
+    """Defensive safety net: drop anything whose end (or start, if no
+    end is given) has already passed, regardless of what the API's date
+    filters returned. This is what actually protects against stale
+    events (e.g. from 2021/2023) reaching Telegram."""
+    now = datetime.now(timezone.utc).isoformat()
+    reference = ev.get("end_time") or ev.get("start_time")
+    if not reference:
+        return True  # no date info at all -- don't drop it, just in case
+    return reference >= now
 
 
 def format_message(ev: dict) -> str:
@@ -245,11 +269,19 @@ def main() -> None:
 
     new_events = [
         ev for ev in events
-        if ev["id"] not in seen and looks_kid_relevant(ev) and is_free(ev)
+        if ev["id"] not in seen and looks_kid_relevant(ev) and is_free(ev) and has_not_ended(ev)
     ]
     # Oldest/soonest first
     new_events.sort(key=lambda e: e.get("start_time") or "")
     print(f"{len(new_events)} new events to send")
+
+    if SEED_ONLY:
+        print("SEED_ONLY is set: marking all as seen without sending any messages.")
+        for ev in new_events:
+            seen.add(ev["id"])
+        save_seen(seen)
+        print(f"Seeded. State saved with {len(seen)} known events.")
+        return
 
     sent_ok = 0
     for ev in new_events:
