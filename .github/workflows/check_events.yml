@@ -6,7 +6,12 @@ on:
     # Helsinki time depending on daylight saving). Adjust as you like:
     # https://crontab.guru/
     - cron: '0 6,14 * * *'
-  workflow_dispatch: {}   # lets you trigger a run manually from the Actions tab
+  workflow_dispatch:
+    inputs:
+      seed_only:
+        description: 'Seed mode: mark all matches as seen WITHOUT sending Telegram messages'
+        type: boolean
+        default: false
 
 permissions:
   contents: write   # needed to commit the updated seen_events.json
@@ -28,6 +33,8 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SEED_ONLY: ${{ github.event.inputs.seed_only || 'false' }}
+          PYTHONUNBUFFERED: "1"
         run: python scraper.py
 
       - name: Commit updated state file
