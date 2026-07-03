@@ -78,6 +78,13 @@ TEXT_QUERIES = [
 # How far ahead to look.
 DAYS_AHEAD = 30
 
+# Cap on how many messages to send in a single run. Prevents a big
+# backlog (e.g. after a long gap, or the very first run) from flooding
+# Telegram all at once. Events are sent soonest-happening first; anything
+# beyond the cap is simply picked up on the next run instead of being
+# discarded.
+MAX_MESSAGES_PER_RUN = 25
+
 # Terms that suggest an event is NOT meant for the 1-8y range, used to
 # trim obviously irrelevant results (e.g. senior citizen clubs that also
 # contain the word "perhe" in unrelated text).
@@ -273,7 +280,7 @@ def main() -> None:
     ]
     # Oldest/soonest first
     new_events.sort(key=lambda e: e.get("start_time") or "")
-    print(f"{len(new_events)} new events to send")
+    print(f"{len(new_events)} new events found")
 
     if SEED_ONLY:
         print("SEED_ONLY is set: marking all as seen without sending any messages.")
@@ -283,15 +290,20 @@ def main() -> None:
         print(f"Seeded. State saved with {len(seen)} known events.")
         return
 
+    to_send = new_events[:MAX_MESSAGES_PER_RUN]
+    remaining = len(new_events) - len(to_send)
+    print(f"Sending {len(to_send)} this run"
+          + (f" ({remaining} more queued for next run)" if remaining > 0 else ""))
+
     sent_ok = 0
-    for ev in new_events:
+    for ev in to_send:
         if send_telegram(format_message(ev)):
             sent_ok += 1
             seen.add(ev["id"])
         time.sleep(1)  # be gentle with Telegram's rate limits
 
     save_seen(seen)
-    print(f"Sent {sent_ok}/{len(new_events)} messages. State saved with {len(seen)} known events.")
+    print(f"Sent {sent_ok}/{len(to_send)} messages. State saved with {len(seen)} known events.")
 
 
 if __name__ == "__main__":
